@@ -1,0 +1,213 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: pipeline-build-spring-example
+spec:
+  description: Pipeline padrão que dispara as pipelines dos microserviços
+  params:
+    - description: URL do repositório
+      name: repo-url
+      type: string
+      default: "https://github.com/rh-bcordeir/spring-example"
+    - description: SHA do último commit no push
+      name: commit-sha
+      type: string
+      default: "1b859f31655eff0524763ed407e9e5a288b0b0ad"
+    - description: Nome da branch do push
+      name: branch
+      type: string
+      default: "master"
+    - description: Nome do projeto
+      name: project-name
+      type: string
+      default: "spring-example"
+    - description: O ambiente baseado na branch do push
+      name: project-environment
+      type: string
+      default: "dev"
+    - description: Nome da organização
+      name: org-name
+      type: string
+      default: rh-ee-bcordeir
+    - name: git-secret-name
+      description: Nome da secret que contém as credenciais para o Gitlab
+      type: string
+      default: 'github-basic-auth'
+    - name: quay-app-org
+      description: Nome da orginização no Quay que a imagem da aplicação será criada
+      type: string
+      default: 'rh-ee-bcordeir'
+    - name: quay-base-url
+      description: Endereço base do repositório Quay
+      type: string
+      default: 'quay.io'
+  tasks:
+    - name: fetch-repository
+      params:
+        - name: URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.commit-sha)
+        - name: SUBDIRECTORY
+          value: ""
+        - name: DELETE_EXISTING
+          value: 'true'
+        - name: branch
+          value: $(params.branch)
+        - name: project-name
+          value: $(params.project-name)
+        - name: org-name
+          value: $(params.org-name)
+      taskRef:
+        resolver: cluster
+        params:
+        - name: kind
+          value: task
+        - name: name
+          value: git-clone
+        - name: namespace
+          value: openshift-pipelines
+      workspaces:
+        - name: output
+          workspace: source-code
+    - name: maven-build
+      runAfter: [fetch-repository]
+      taskSpec:
+        workspaces:
+          - name: source
+        steps:
+          - name: mvn
+            image: maven:3.9.6-eclipse-temurin-21
+            workingDir: $(workspaces.source.path)   # or .../app if still cloning into app
+            script: |
+              set -eux
+              java -version
+              mvn -version
+              mvn -B -DskipTests package
+      workspaces:
+        - name: source
+          workspace: source-code
+    - name: build
+      params:
+        - name: IMAGE
+          value: 'quay.io/rh-ee-bcordeir/spring-example:1.0.0'
+        - name: TLSVERIFY
+          value: 'false'
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: '.'
+      runAfter:
+        - maven-build
+      taskRef:
+        resolver: cluster
+        params:
+        - name: kind
+          value: task
+        - name: name
+          value: buildah
+        - name: namespace
+          value: openshift-pipelines
+      workspaces:
+        - name: source
+          workspace: source-code
+    # - name: sign-image
+    #   params:
+    #     - name: image
+    #       value: '$(tasks.define-app-pipeline-infos.results.final_image_name)@$(tasks.build.results.IMAGE_DIGEST)'
+    #     - name: namespace
+    #       value: $(context.pipelineRun.namespace)
+    #     - name: cosignkey
+    #       value: cosign
+    #     - name: branch
+    #       value: $(params.branch)
+    #     - name: project-name
+    #       value: $(params.project-name)
+    #     - name: org-name
+    #       value: $(params.org-name)
+    #   runAfter:
+    #     - build
+    #   taskRef:
+    #     resolver: git
+    #     params:
+    #       - name: org
+    #         value: $(params.org-name)
+    #       - name: repo
+    #         value: $(params.project-name)
+    #       - name: revision
+    #         value: $(params.branch)
+    #       - name: pathInRepo
+    #         value: pipeline/tasks/cosign.yaml
+    - name: image-scan
+      params:
+        - name: image
+          value: 'quay.io/rh-ee-bcordeir/spring-example:1.0.0'
+        - name: rox_api_token
+          value: roxsecret
+        - name: rox_central_endpoint
+          value: roxsecret
+        - name: output_format
+          value: table
+        - name: image_digest
+          value: $(tasks.build.results.IMAGE_DIGEST)
+        - name: branch
+          value: $(params.branch)
+        - name: project-name
+          value: $(params.project-name)
+        - name: org-name
+          value: $(params.org-name)
+      runAfter:
+        - build
+      taskRef:
+        kind: Task
+        name: image-scan
+      # taskRef:
+      #   resolver: cluster
+      #   params:
+      #   - name: kind
+      #     value: task
+      #   - name: name
+      #     value: acs-image-scan
+      #   - name: namespace
+      #     value: andrew-app-dev
+      # workspaces:
+      #   - name: reports        
+      #     workspace: reports  
+    - name: image-check
+      params:
+        - name: image
+          value: 'quay.io/rh-ee-bcordeir/spring-example:1.0.0'
+        - name: rox_api_token
+          value: roxsecret
+        - name: rox_central_endpoint
+          value: roxsecret
+        - name: image_digest
+          value: $(tasks.build.results.IMAGE_DIGEST)
+        - name: branch
+          value: $(params.branch)
+        - name: project-name
+          value: $(params.project-name)
+        - name: org-name
+          value: $(params.org-name)
+      runAfter:
+        - image-scan
+      taskRef:
+        kind: Task
+        name: image-check
+      # taskRef:
+      #   resolver: cluster
+      #   params:
+      #   - name: kind
+      #     value: task
+      #   - name: name
+      #     value: acs-image-check
+      #   - name: namespace
+      #     value: andrew-app-dev
+      # workspaces:
+      #   - name: reports        
+      #     workspace: reports   
+  workspaces:
+    - description: |
+        Espaço utilizado para reaproveitar uma única cópia do código entre as tasks
+      name: source-code
+    - name: reports
