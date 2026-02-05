@@ -25,7 +25,6 @@ RUN set -eux; \
     rm -rf /var/cache/dnf /var/cache/yum
 
 # Copia fontes com ownership correto e atualiza cache de fontes
-COPY --chown=${USER_ID}:0 .fonts/rawline-cdnfonts /usr/share/fonts/custom/rawline
 RUN fc-cache -f -v && fc-list | grep -i Rawline || true
 
 EXPOSE 8080
